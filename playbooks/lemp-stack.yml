@@ -1,0 +1,245 @@
+---
+- name: Deploy LEMP Stack (Linux, Nginx, MySQL, PHP)
+  hosts: web_servers
+  become: yes
+
+  vars:
+    nginx_version: latest
+    php_version: "8.2"
+    mysql_version: "8.0"
+    redis_enabled: true
+
+    mysql_databases:
+      - name: "{{ app_database | default('myapp') }}"
+        collation: utf8mb4_unicode_ci
+        encoding: utf8mb4
+
+    mysql_users:
+      - name: "{{ app_db_user | default('appuser') }}"
+        password: "{{ app_db_password }}"
+        priv: "{{ app_database | default('myapp') }}.*:ALL"
+        host: localhost
+
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      tags: [common]
+
+    - name: Install common packages
+      apt:
+        name:
+          - curl
+          - wget
+          - git
+          - vim
+          - software-properties-common
+          - ca-certificates
+          - apt-transport-https
+        state: present
+      tags: [common]
+
+    # Nginx Installation
+    - name: Install Nginx
+      apt:
+        name: nginx
+        state: present
+      tags: [nginx]
+
+    - name: Create Nginx sites-available directory
+      file:
+        path: /etc/nginx/sites-available
+        state: directory
+        mode: '0755'
+      tags: [nginx]
+
+    - name: Configure Nginx
+      template:
+        src: ../templates/nginx/nginx.conf.j2
+        dest: /etc/nginx/nginx.conf
+        owner: root
+        group: root
+        mode: '0644'
+      notify: restart nginx
+      tags: [nginx]
+
+    - name: Start and enable Nginx
+      service:
+        name: nginx
+        state: started
+        enabled: yes
+      tags: [nginx]
+
+    # PHP Installation
+    - name: Add PHP repository
+      apt_repository:
+        repo: ppa:ondrej/php
+        state: present
+      tags: [php]
+
+    - name: Install PHP and extensions
+      apt:
+        name:
+          - "php{{ php_version }}-fpm"
+          - "php{{ php_version }}-mysql"
+          - "php{{ php_version }}-curl"
+          - "php{{ php_version }}-gd"
+          - "php{{ php_version }}-mbstring"
+          - "php{{ php_version }}-xml"
+          - "php{{ php_version }}-zip"
+          - "php{{ php_version }}-redis"
+          - "php{{ php_version }}-opcache"
+        state: present
+      tags: [php]
+
+    - name: Configure PHP-FPM
+      template:
+        src: ../templates/php/php-fpm.conf.j2
+        dest: "/etc/php/{{ php_version }}/fpm/pool.d/www.conf"
+        owner: root
+        group: root
+        mode: '0644'
+      notify: restart php-fpm
+      tags: [php]
+
+    - name: Start and enable PHP-FPM
+      service:
+        name: "php{{ php_version }}-fpm"
+        state: started
+        enabled: yes
+      tags: [php]
+
+    # MySQL Installation
+    - name: Install MySQL server
+      apt:
+        name:
+          - mysql-server
+          - mysql-client
+          - python3-pymysql
+        state: present
+      tags: [mysql, database]
+
+    - name: Start and enable MySQL
+      service:
+        name: mysql
+        state: started
+        enabled: yes
+      tags: [mysql, database]
+
+    - name: Set MySQL root password
+      mysql_user:
+        name: root
+        password: "{{ mysql_root_password }}"
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+        check_implicit_admin: yes
+        priv: "*.*:ALL,GRANT"
+        state: present
+      tags: [mysql, database]
+
+    - name: Create MySQL databases
+      mysql_db:
+        name: "{{ item.name }}"
+        collation: "{{ item.collation }}"
+        encoding: "{{ item.encoding }}"
+        state: present
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+      loop: "{{ mysql_databases }}"
+      tags: [mysql, database]
+
+    - name: Create MySQL users
+      mysql_user:
+        name: "{{ item.name }}"
+        password: "{{ item.password }}"
+        priv: "{{ item.priv }}"
+        host: "{{ item.host }}"
+        state: present
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+      loop: "{{ mysql_users }}"
+      tags: [mysql, database]
+
+    # Redis Installation
+    - name: Install Redis
+      apt:
+        name: redis-server
+        state: present
+      when: redis_enabled
+      tags: [redis]
+
+    - name: Configure Redis
+      lineinfile:
+        path: /etc/redis/redis.conf
+        regexp: '^bind'
+        line: 'bind 127.0.0.1 ::1'
+      when: redis_enabled
+      notify: restart redis
+      tags: [redis]
+
+    - name: Start and enable Redis
+      service:
+        name: redis-server
+        state: started
+        enabled: yes
+      when: redis_enabled
+      tags: [redis]
+
+    # Firewall Configuration
+    - name: Install UFW
+      apt:
+        name: ufw
+        state: present
+      tags: [firewall]
+
+    - name: Configure UFW defaults
+      ufw:
+        direction: "{{ item.direction }}"
+        policy: "{{ item.policy }}"
+      loop:
+        - { direction: 'incoming', policy: 'deny' }
+        - { direction: 'outgoing', policy: 'allow' }
+      tags: [firewall]
+
+    - name: Allow SSH
+      ufw:
+        rule: allow
+        port: '22'
+        proto: tcp
+      tags: [firewall]
+
+    - name: Allow HTTP/HTTPS
+      ufw:
+        rule: allow
+        port: "{{ item }}"
+        proto: tcp
+      loop:
+        - '80'
+        - '443'
+      tags: [firewall]
+
+    - name: Enable UFW
+      ufw:
+        state: enabled
+      tags: [firewall]
+
+  handlers:
+    - name: restart nginx
+      service:
+        name: nginx
+        state: restarted
+
+    - name: restart php-fpm
+      service:
+        name: "php{{ php_version }}-fpm"
+        state: restarted
+
+    - name: restart mysql
+      service:
+        name: mysql
+        state: restarted
+
+    - name: restart redis
+      service:
+        name: redis-server
+        state: restarted

@@ -1,0 +1,25 @@
+---
+# Common variables for all hosts
+
+# System timezone
+timezone: "Asia/Tashkent"
+
+# Common packages
+common_packages:
+  - curl
+  - wget
+  - git
+  - vim
+  - htop
+  - net-tools
+
+# Security settings
+ssh_port: 22
+disable_root_login: yes
+password_authentication: no
+
+# Firewall
+firewall_allowed_ports:
+  - 22
+  - 80
+  - 443
