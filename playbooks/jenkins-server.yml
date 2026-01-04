@@ -1,0 +1,252 @@
+---
+- name: Deploy Jenkins CI/CD Server
+  hosts: jenkins_server
+  become: yes
+  vars:
+    jenkins_port: 8080
+    jenkins_home: /var/lib/jenkins
+    java_version: "17"
+    jenkins_admin_username: admin
+    jenkins_admin_password: "{{ vault_jenkins_admin_password | default('ChangeMe123!') }}"
+    jenkins_plugins:
+      - git
+      - workflow-aggregator
+      - docker-workflow
+      - blueocean
+      - credentials-binding
+      - ssh-slaves
+      - pipeline-stage-view
+
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      tags: always
+
+    # Install Java
+    - name: Install Java
+      apt:
+        name: "openjdk-{{ java_version }}-jdk"
+        state: present
+      tags: java
+
+    - name: Set JAVA_HOME environment variable
+      lineinfile:
+        path: /etc/environment
+        regexp: '^JAVA_HOME='
+        line: 'JAVA_HOME="/usr/lib/jvm/java-{{ java_version }}-openjdk-amd64"'
+        create: yes
+      tags: java
+
+    # Add Jenkins repository
+    - name: Add Jenkins GPG key
+      apt_key:
+        url: https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key
+        state: present
+      tags: jenkins
+
+    - name: Add Jenkins repository
+      apt_repository:
+        repo: deb https://pkg.jenkins.io/debian-stable binary/
+        state: present
+        filename: jenkins
+      tags: jenkins
+
+    # Install Jenkins
+    - name: Install Jenkins
+      apt:
+        name: jenkins
+        state: present
+        update_cache: yes
+      tags: jenkins
+
+    - name: Ensure Jenkins home directory exists
+      file:
+        path: "{{ jenkins_home }}"
+        state: directory
+        owner: jenkins
+        group: jenkins
+        mode: '0755'
+      tags: jenkins
+
+    - name: Configure Jenkins port
+      lineinfile:
+        path: /etc/default/jenkins
+        regexp: '^HTTP_PORT='
+        line: 'HTTP_PORT={{ jenkins_port }}'
+      notify: restart jenkins
+      tags: jenkins
+
+    - name: Start and enable Jenkins service
+      service:
+        name: jenkins
+        state: started
+        enabled: yes
+      tags: jenkins
+
+    - name: Wait for Jenkins to start
+      wait_for:
+        port: "{{ jenkins_port }}"
+        delay: 10
+        timeout: 300
+      tags: jenkins
+
+    # Install Docker (for Docker builds)
+    - name: Install Docker dependencies
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+        state: present
+      tags: docker
+
+    - name: Add Docker GPG key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+      tags: docker
+
+    - name: Add Docker repository
+      apt_repository:
+        repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+        state: present
+      tags: docker
+
+    - name: Install Docker
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+        state: present
+        update_cache: yes
+      tags: docker
+
+    - name: Add jenkins user to docker group
+      user:
+        name: jenkins
+        groups: docker
+        append: yes
+      notify: restart jenkins
+      tags: docker
+
+    - name: Start and enable Docker
+      service:
+        name: docker
+        state: started
+        enabled: yes
+      tags: docker
+
+    # Install Git
+    - name: Install Git
+      apt:
+        name: git
+        state: present
+      tags: git
+
+    # Install additional build tools
+    - name: Install build tools
+      apt:
+        name:
+          - maven
+          - gradle
+          - make
+          - build-essential
+        state: present
+      tags: build-tools
+
+    # Install Node.js and npm (for frontend builds)
+    - name: Install Node.js repository
+      shell: curl -fsSL https://deb.nodesource.com/setup_lts.x | bash -
+      args:
+        creates: /etc/apt/sources.list.d/nodesource.list
+      tags: nodejs
+
+    - name: Install Node.js
+      apt:
+        name: nodejs
+        state: present
+        update_cache: yes
+      tags: nodejs
+
+    # Configure firewall
+    - name: Install UFW
+      apt:
+        name: ufw
+        state: present
+      tags: firewall
+
+    - name: Allow SSH
+      ufw:
+        rule: allow
+        port: '22'
+        proto: tcp
+      tags: firewall
+
+    - name: Allow Jenkins port
+      ufw:
+        rule: allow
+        port: '{{ jenkins_port }}'
+        proto: tcp
+      tags: firewall
+
+    - name: Enable firewall
+      ufw:
+        state: enabled
+      tags: firewall
+
+    # Get initial admin password
+    - name: Check if initial admin password file exists
+      stat:
+        path: "{{ jenkins_home }}/secrets/initialAdminPassword"
+      register: initial_password_file
+      tags: info
+
+    - name: Read initial admin password
+      slurp:
+        src: "{{ jenkins_home }}/secrets/initialAdminPassword"
+      register: initial_password
+      when: initial_password_file.stat.exists
+      tags: info
+
+    - name: Display Jenkins access information
+      debug:
+        msg: |
+          ========================================
+          Jenkins Installation Complete!
+          ========================================
+
+          Access Jenkins at: http://{{ ansible_default_ipv4.address }}:{{ jenkins_port }}
+
+          {% if initial_password_file.stat.exists %}
+          Initial Admin Password: {{ initial_password.content | b64decode | trim }}
+          {% else %}
+          Initial setup already completed.
+          {% endif %}
+
+          Installation includes:
+          - Java {{ java_version }}
+          - Docker (jenkins user added to docker group)
+          - Git, Maven, Gradle
+          - Node.js and npm
+
+          Next steps:
+          1. Access Jenkins web interface
+          2. Complete initial setup wizard
+          3. Install recommended plugins
+          4. Create admin user
+          5. Configure build tools and credentials
+
+          Jenkins home: {{ jenkins_home }}
+          ========================================
+      tags: info
+
+  handlers:
+    - name: restart jenkins
+      service:
+        name: jenkins
+        state: restarted
