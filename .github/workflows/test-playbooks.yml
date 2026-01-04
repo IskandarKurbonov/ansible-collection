@@ -1,0 +1,114 @@
+name: Test Ansible Playbooks
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+  workflow_dispatch:
+
+jobs:
+  lint:
+    name: Ansible Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Ansible and ansible-lint
+        run: |
+          pip install ansible ansible-lint yamllint
+
+      - name: Run yamllint
+        run: |
+          yamllint -c .yamllint playbooks/ || true
+
+      - name: Run ansible-lint
+        run: |
+          ansible-lint playbooks/*.yml || true
+        continue-on-error: true
+
+  syntax-check:
+    name: Syntax Check
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        playbook:
+          - lamp-stack.yml
+          - lemp-stack.yml
+          - docker-host.yml
+          - kubernetes-node.yml
+          - jenkins-server.yml
+          - monitoring-stack.yml
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Ansible
+        run: |
+          pip install ansible
+
+      - name: Install Ansible collections
+        run: |
+          ansible-galaxy collection install -r requirements.yml
+
+      - name: Syntax check - ${{ matrix.playbook }}
+        run: |
+          ansible-playbook playbooks/${{ matrix.playbook }} --syntax-check -i inventory/hosts.example
+
+  validate-inventory:
+    name: Validate Inventory
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Ansible
+        run: |
+          pip install ansible
+
+      - name: Validate inventory file
+        run: |
+          ansible-inventory -i inventory/hosts.example --list
+
+  test-summary:
+    name: Test Summary
+    runs-on: ubuntu-latest
+    needs: [lint, syntax-check, validate-inventory]
+    if: always()
+
+    steps:
+      - name: Check test results
+        run: |
+          echo "==================================="
+          echo "Ansible Playbooks Test Summary"
+          echo "==================================="
+          echo "Lint: ${{ needs.lint.result }}"
+          echo "Syntax Check: ${{ needs.syntax-check.result }}"
+          echo "Inventory Validation: ${{ needs.validate-inventory.result }}"
+          echo "==================================="
+
+          if [ "${{ needs.lint.result }}" == "failure" ] || [ "${{ needs.syntax-check.result }}" == "failure" ] || [ "${{ needs.validate-inventory.result }}" == "failure" ]; then
+            echo "❌ Some tests failed!"
+            exit 1
+          else
+            echo "✅ All tests passed!"
+          fi
